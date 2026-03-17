@@ -1,0 +1,84 @@
+# Run from repo root: docker compose -f scripts/docker-compose.yml up --build
+# Copy scripts/.env.example to scripts/.env and set PAYLOAD_SECRET (and optional POSTGRES_PASSWORD) first.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-payload}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-payload_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-payload} -d ${POSTGRES_DB:-payload_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+    networks:
+      - app
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: scripts/backend-migrate.Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-payload}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-payload_db}
+      PAYLOAD_SECRET: ${PAYLOAD_SECRET:-dummy-secret-min-32-chars}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app
+    profiles:
+      - tools
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URI: postgresql://${POSTGRES_USER:-payload}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-payload_db}
+      PAYLOAD_SECRET: ${PAYLOAD_SECRET}
+      PAYLOAD_URL: ${PAYLOAD_URL:-http://localhost:3001}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    volumes:
+      - backend_media:/app/media
+    user: "0"
+    command: ["sh", "-c", "mkdir -p /app/media && chown 1001:1001 /app/media && exec su -s /bin/sh nextjs -c 'node server.js'"]
+    networks:
+      - app
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: scripts/frontend.Dockerfile
+      args:
+        NEXT_PUBLIC_PAYLOAD_URL: ${NEXT_PUBLIC_PAYLOAD_URL:-http://localhost:3001}
+    environment:
+      # Server-side API calls from container use backend hostname; browser still uses NEXT_PUBLIC_PAYLOAD_URL
+      PAYLOAD_API_URL: ${PAYLOAD_API_URL:-http://backend:3001}
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    networks:
+      - app
+
+volumes:
+  postgres_data:
+  backend_media:
+
+networks:
+  app:
+    driver: bridge

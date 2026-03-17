@@ -1,0 +1,44 @@
+{
+  "name": "payload-tutorials-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "clean": "rd /s /q .next",
+    "clean:modules": "rd /s /q node_modules",
+    "clean:cache": "npm cache clean --force",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "axios": "^1.13.5",
+    "next": "16.1.6",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@next/eslint-plugin-next": "^16.1.6",
+    "@tailwindcss/postcss": "^4",
+    "eslint": "^10.0.1",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.0",
+    "tailwindcss": "^4"
+  },
+  "pnpm": {
+    "supportedArchitectures": {
+      "os": [
+        "current",
+        "linux"
+      ],
+      "cpu": [
+        "current",
+        "x64"
+      ]
+    },
+    "onlyBuiltDependencies": [
+      "sharp"
+    ]
+  },
+  "packageManager": "pnpm@10.12.4"
+}

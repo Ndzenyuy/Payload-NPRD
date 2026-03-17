@@ -1,0 +1,140 @@
+name: Deploy Backend to ECS
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Debug GitHub Context
+        run: |
+          echo "Repository: ${{ github.repository }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Event: ${{ github.event_name }}"
+
+      - name: Set Environment Variables
+        id: vars
+        run: |
+          COMMIT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+            ENV="prod"
+            ECR_REPO="testapp-backend-prod"
+            ECS_CLUSTER="ECS-Cluster-Shared-Services-PRD"
+            ECS_SERVICE="testapp-backend-prod"
+          else
+            TAG="${COMMIT_SHA}-nonprod-${TIMESTAMP}"
+            ENV="nonprod"
+            ECR_REPO="testapp-backend-nonprod"
+            ECS_CLUSTER="ECS-Cluster-Shared-Services-NPRD"
+            ECS_SERVICE="testapp-backend-nonprod"
+          fi
+          
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "env=${ENV}" >> $GITHUB_OUTPUT
+          echo "ecr_repo=${ECR_REPO}" >> $GITHUB_OUTPUT
+          echo "ecs_cluster=${ECS_CLUSTER}" >> $GITHUB_OUTPUT
+          echo "ecs_service=${ECS_SERVICE}" >> $GITHUB_OUTPUT
+          
+          echo "📦 Image Tag: ${TAG}"
+          echo "🌍 Environment: ${ENV}"
+          echo "📋 ECR Repository: ${ECR_REPO}"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: github-actions-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          echo "🔨 Building Docker image..."
+          docker build -t $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:latest
+          echo "✅ Build completed"
+
+      - name: Push to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          echo "📤 Pushing image to ECR..."
+          docker push $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG
+          docker push $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:latest
+          echo "✅ Push completed"
+          echo "🔗 Image: $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG"
+
+      - name: Update ECS Task Definition
+        id: task-def
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          echo "📝 Fetching current task definition..."
+          TASK_DEFINITION=$(aws ecs describe-task-definition \
+            --task-definition ${{ steps.vars.outputs.ecs_service }} \
+            --query 'taskDefinition' \
+            --output json)
+          
+          echo "🔄 Updating container image..."
+          NEW_TASK_DEF=$(echo $TASK_DEFINITION | jq --arg IMAGE "$ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG" \
+            '.containerDefinitions[0].image = $IMAGE | 
+             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+          
+          echo "$NEW_TASK_DEF" > task-definition.json
+          echo "✅ Task definition updated"
+
+      - name: Deploy to ECS
+        run: |
+          echo "🚀 Registering new task definition..."
+          NEW_TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          
+          echo "📋 New Task Definition: $NEW_TASK_ARN"
+          
+          echo "🔄 Updating ECS service..."
+          aws ecs update-service \
+            --cluster ${{ steps.vars.outputs.ecs_cluster }} \
+            --service ${{ steps.vars.outputs.ecs_service }} \
+            --task-definition $NEW_TASK_ARN \
+            --force-new-deployment
+          
+          echo "✅ Service update initiated - deployment will continue in background"
+
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "📊 Deployment Summary"
+          echo "===================="
+          echo "Environment: ${{ steps.vars.outputs.env }}"
+          echo "Image Tag: ${{ steps.vars.outputs.tag }}"
+          echo "ECS Cluster: ${{ steps.vars.outputs.ecs_cluster }}"
+          echo "ECS Service: ${{ steps.vars.outputs.ecs_service }}"
+          echo "Status: ${{ job.status }}"
