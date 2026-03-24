@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# One command to start the full stack: postgres, run migrations, backend, then frontend (built with backend reachable).
+# One command to start the full stack: fetch RDS credentials from SSM, start backend, then frontend.
 # Run from repo root: ./scripts/up.sh
 # Use ./scripts/up.sh --build to force rebuild the frontend image.
+#
+# Prerequisites:
+#   - AWS CLI installed and configured (or running on EC2 with an IAM instance role)
+#   - SSM_ENV, SSM_APP, AWS_REGION exported (or set in your shell)
+#     e.g.: export SSM_ENV=nonprod SSM_APP=testapp AWS_REGION=us-east-1
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -11,11 +16,8 @@ for arg in "$@"; do
   [ "$arg" = "--build" ] && FORCE_BUILD=1 && break
 done
 
-echo "Starting postgres..."
-docker compose -f scripts/docker-compose.yml --env-file scripts/.env up -d postgres
-
-echo "Running Payload migrations (creates users, pages, etc.)..."
-"$ROOT/scripts/migrate.sh"
+echo "Fetching credentials from SSM..."
+"$ROOT/scripts/fetch-ssm-env.sh"
 
 echo "Starting backend..."
 docker compose -f scripts/docker-compose.yml --env-file scripts/.env up -d backend

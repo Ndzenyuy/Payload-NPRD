@@ -1,40 +1,62 @@
-# Payload + PostgreSQL (local container setup)
+# Payload + RDS PostgreSQL (EC2 container setup)
 
-This repo runs the **payload** frontend and backend together with **PostgreSQL** in containers. All orchestration and docs are at the repo root; the apps under `frontend/` and `backend/` are not modified.
+This repo runs the **Payload** backend (port 3001) and **Next.js** frontend (port 3000) in Docker containers on an EC2 instance. Database credentials are fetched from **AWS SSM Parameter Store** — no local PostgreSQL container is used. The shared RDS PostgreSQL instance is provisioned by the `Github-Repo-AWS-SharedServices-Infra` Terraform stack.
+
+All orchestration and docs are at the repo root; the apps under `frontend/` and `backend/` are not modified.
 
 ## Contents
 
 | File / folder      | Purpose |
 |--------------------|--------|
-| `scripts/`         | Scripts (prereq install, compose, helpers). |
+| `scripts/`         | Scripts (prereq install, compose, helpers, SSM fetch). |
 | `plan.md`          | Plan and status for this setup. |
-| `change.md`        | Log of changes we make. |
-| `commands.md`      | Commands to run (prereqs, compose, etc.). |
+| `change.md`        | Log of changes made. |
+| `commands.md`      | Step-by-step commands for deployment, logs, and troubleshooting. |
 | `readme.md`        | This file. |
-| `prerequisites.md` | List of prerequisites and how they are installed. |
+| `prerequisites.md` | Prerequisites and how to install them. |
 
-## Quick start
+## Architecture
 
-1. Install prerequisites (Docker, Docker Compose; script skips if already installed):
+```
+Browser
+  ├── :3000 → Frontend (Next.js, Docker)
+  └── :3001 → Backend (Payload CMS, Docker)
+                └── DATABASE_URI → Shared RDS PostgreSQL (AWS, private subnet)
+                    (credentials fetched from SSM Parameter Store)
+```
+
+The EC2 instance IAM role grants `ssm:GetParameter` access. No AWS credentials file is needed on the instance.
+
+## Quick start (on the EC2 instance)
+
+1. Install prerequisites (Docker, AWS CLI; script skips already-installed tools):
 
    ```bash
    chmod +x scripts/install-prereqs.sh
    ./scripts/install-prereqs.sh
    ```
 
-2. Copy env and start the stack:
+2. Export SSM context and fetch credentials:
 
    ```bash
-   cp scripts/.env.example scripts/.env
-   # Edit scripts/.env and set PAYLOAD_SECRET (min 32 chars).
+   export SSM_ENV=nonprod SSM_APP=testapp AWS_REGION=us-east-1
+   ./scripts/fetch-ssm-env.sh
+   ```
+
+   This writes `scripts/.env` with `DATABASE_URI` and `PAYLOAD_SECRET` pulled from SSM.
+
+3. Start the stack:
+
+   ```bash
    ./scripts/up.sh
    ```
 
-3. Open frontend at http://localhost:3000 and Payload admin at http://localhost:3001/admin. See [commands.md](commands.md) for logs, shutdown, troubleshooting, and the **page/slug model** (one `index` page for home, other pages with unique slugs like `/hero`, `/about`).
+4. Open frontend at `http://<EC2-public-IP>:3000` and Payload admin at `http://<EC2-public-IP>:3001/admin`.
 
-**See commands.md** for troubleshooting, the page/slug model, and media: image upload (writable volume), paste S3 URL (CORS on bucket), and frontend display (URL resolution in Hero/TwoColumn, next.config).
+See [commands.md](commands.md) for logs, shutdown, migration, rebuild, and troubleshooting.
 
 ## Requirements
 
-- Linux (e.g. Ubuntu/Debian or WSL2). See `prerequisites.md` for details.
-- To run Docker without sudo, add your user to the `docker` group (see [prerequisites.md](prerequisites.md#run-docker-without-sudo)).
+- Linux (Ubuntu/Debian or WSL2). See [prerequisites.md](prerequisites.md).
+- EC2 instance must have an IAM role with `ssm:GetParameter` and `kms:Decrypt` on the SSM paths (provisioned by Terraform — see `Github-Repo-AWS-SharedServices-Infra`).
+- AWS CLI installed on the EC2 instance (`scripts/install-prereqs.sh` handles this).
