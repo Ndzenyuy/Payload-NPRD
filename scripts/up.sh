@@ -12,14 +12,20 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 FORCE_BUILD=
+FORCE_BUILD_BACKEND=
 for arg in "$@"; do
-  [ "$arg" = "--build" ] && FORCE_BUILD=1 && break
+  [ "$arg" = "--build" ] && FORCE_BUILD=1
+  [ "$arg" = "--build-backend" ] && FORCE_BUILD_BACKEND=1
 done
 
 echo "Fetching credentials from SSM..."
 "$ROOT/scripts/fetch-ssm-env.sh"
 
 echo "Starting backend..."
+if [ -n "$FORCE_BUILD_BACKEND" ]; then
+  echo "Rebuilding backend image..."
+  docker compose -f scripts/docker-compose.yml --env-file scripts/.env build --no-cache backend
+fi
 docker compose -f scripts/docker-compose.yml --env-file scripts/.env up -d backend
 
 echo "Waiting for backend at http://localhost:3001..."
