@@ -5,8 +5,8 @@
 #
 # Prerequisites:
 #   - AWS CLI installed and configured (or running on EC2 with an IAM instance role)
-#   - SSM_ENV, SSM_APP, AWS_REGION exported (or set in your shell)
-#     e.g.: export SSM_ENV=nonprod SSM_APP=testapp AWS_REGION=us-east-1
+#   - SSM_ENV, SSM_APP, AWS_REGION, PUBLIC_IP exported (or set in your shell)
+#     e.g.: export SSM_ENV=nonprod SSM_APP=testapp AWS_REGION=us-east-1 PUBLIC_IP=54.235.28.12
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -37,9 +37,9 @@ for i in $(seq 1 60); do
 done
 
 if [ -n "$FORCE_BUILD" ] || ! docker image inspect payload-frontend &>/dev/null; then
-  echo "Building frontend image (backend reachable at localhost:3001)..."
+  echo "Building frontend image (backend reachable at http://${PUBLIC_IP}:3001)..."
   docker build --network host -f scripts/frontend.Dockerfile -t payload-frontend . \
-    --build-arg NEXT_PUBLIC_PAYLOAD_URL=http://localhost:3001
+    --build-arg NEXT_PUBLIC_PAYLOAD_URL=http://${PUBLIC_IP}:3001
   echo "Pruning dangling images (previous frontend build)..."
   docker image prune -f
 else
@@ -49,4 +49,4 @@ fi
 echo "Starting frontend and ensuring all services are up..."
 docker compose -f scripts/docker-compose.yml -f scripts/compose.frontend-image.yml --env-file scripts/.env up -d
 
-echo "Done. Frontend: http://localhost:3000  Admin: http://localhost:3001/admin"
+echo "Done. Frontend: http://${PUBLIC_IP}:3000  Admin: http://${PUBLIC_IP}:3001/admin"

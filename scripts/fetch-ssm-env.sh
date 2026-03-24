@@ -6,6 +6,7 @@
 #   SSM_ENV        - Terraform workspace / environment name (e.g. nonprod)
 #   SSM_APP        - App name as used in SSM paths (e.g. testapp)
 #   AWS_REGION     - AWS region where parameters are stored (e.g. us-east-1)
+#   PUBLIC_IP      - EC2 public IP or hostname (e.g. 54.235.28.12)
 #
 # SSM paths read:
 #   /{SSM_ENV}/{SSM_APP}/db/uri        -> DATABASE_URI
@@ -20,6 +21,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 : "${SSM_ENV:?SSM_ENV is required (e.g. nonprod)}"
 : "${SSM_APP:?SSM_APP is required (e.g. testapp)}"
 : "${AWS_REGION:?AWS_REGION is required (e.g. us-east-1)}"
+: "${PUBLIC_IP:?PUBLIC_IP is required (e.g. 54.235.28.12)}"
 
 fetch() {
   aws ssm get-parameter \
@@ -35,15 +37,9 @@ echo "Fetching SSM parameters for env=${SSM_ENV} app=${SSM_APP} region=${AWS_REG
 DATABASE_URI="$(fetch "/${SSM_ENV}/${SSM_APP}/db/uri")"
 PAYLOAD_SECRET="$(fetch "/${SSM_ENV}/${SSM_APP}/payload/secret")"
 
-# Detect public IP: prefer explicit override, then EC2 metadata, then localhost
-if [ -n "${PUBLIC_IP:-}" ]; then
-  HOST_IP="$PUBLIC_IP"
-else
-  HOST_IP="$(curl -sf --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
-fi
-BACKEND_URL="http://${HOST_IP:-localhost}:3001"
-FRONTEND_URL_VAL="http://${HOST_IP:-localhost}:3000"
-echo "Using host: ${HOST_IP:-localhost}"
+BACKEND_URL="http://${PUBLIC_IP}:3001"
+FRONTEND_URL_VAL="http://${PUBLIC_IP}:3000"
+echo "Using host: ${PUBLIC_IP}"
 
 # Also fetch supporting values for reference / migrate script
 DB_ENDPOINT="$(fetch "/${SSM_ENV}/${SSM_APP}/db/endpoint" 2>/dev/null || true)"
