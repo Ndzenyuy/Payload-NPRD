@@ -35,6 +35,16 @@ echo "Fetching SSM parameters for env=${SSM_ENV} app=${SSM_APP} region=${AWS_REG
 DATABASE_URI="$(fetch "/${SSM_ENV}/${SSM_APP}/db/uri")"
 PAYLOAD_SECRET="$(fetch "/${SSM_ENV}/${SSM_APP}/payload/secret")"
 
+# Detect public IP: prefer explicit override, then EC2 metadata, then localhost
+if [ -n "${PUBLIC_IP:-}" ]; then
+  HOST_IP="$PUBLIC_IP"
+else
+  HOST_IP="$(curl -sf --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
+fi
+BACKEND_URL="http://${HOST_IP:-localhost}:3001"
+FRONTEND_URL_VAL="http://${HOST_IP:-localhost}:3000"
+echo "Using host: ${HOST_IP:-localhost}"
+
 # Also fetch supporting values for reference / migrate script
 DB_ENDPOINT="$(fetch "/${SSM_ENV}/${SSM_APP}/db/endpoint" 2>/dev/null || true)"
 DB_NAME="$(fetch "/${SSM_ENV}/${SSM_APP}/db/name" 2>/dev/null || true)"
@@ -54,16 +64,14 @@ ENVEOF
   printf "DB_ENDPOINT='%s'\n" "$DB_ENDPOINT"
   printf "DB_NAME='%s'\n" "$DB_NAME"
   echo ""
-  cat <<'STATICEOF'
-# Backend runtime
-PAYLOAD_URL=http://localhost:3001
-FRONTEND_URL=http://localhost:3000
-
-# Frontend (build-time baked by frontend.Dockerfile)
-NEXT_PUBLIC_PAYLOAD_URL=http://localhost:3001
-# Server-side API URL (container -> backend hostname in Docker network)
-PAYLOAD_API_URL=http://backend:3001
-STATICEOF
+  echo "# Backend runtime"
+  printf "PAYLOAD_URL='%s'\n" "$BACKEND_URL"
+  printf "FRONTEND_URL='%s'\n" "$FRONTEND_URL_VAL"
+  echo ""
+  echo "# Frontend (build-time baked by frontend.Dockerfile)"
+  printf "NEXT_PUBLIC_PAYLOAD_URL='%s'\n" "$BACKEND_URL"
+  echo "# Server-side API URL (container -> backend hostname in Docker network)"
+  echo "PAYLOAD_API_URL=http://backend:3001"
 } >> "$ROOT/scripts/.env"
 
 echo "scripts/.env written."

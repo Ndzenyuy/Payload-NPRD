@@ -29,8 +29,11 @@ export default buildConfig({
     process.env.FRONTEND_URL || 'http://localhost:3000',
     'http://127.0.0.1:3001',
     'http://127.0.0.1:3000',
+  ],
+  csrf: [
+    process.env.PAYLOAD_URL || 'http://localhost:3001',
+    process.env.FRONTEND_URL || 'http://localhost:3000',
   ], 
-  // csrf: ['http://localhost:3000', 'http://localhost:3001'], // Temporarily disabled for debugging
   editor: lexicalEditor(),
   secret: process.env.PAYLOAD_SECRET || '',
   typescript: {
