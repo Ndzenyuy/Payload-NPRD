@@ -12,6 +12,7 @@ if [ ! -f "$ROOT/scripts/.env" ]; then
 fi
 
 echo "Running Payload migrations against RDS (in Docker, Node 20)..."
+docker compose -f scripts/docker-compose.yml --env-file scripts/.env build --no-cache migrate
 docker compose -f scripts/docker-compose.yml --env-file scripts/.env --profile tools run --rm migrate
 
 echo "Migrations done."

@@ -35,6 +35,12 @@ fetch() {
 echo "Fetching SSM parameters for env=${SSM_ENV} app=${SSM_APP} region=${AWS_REGION}..."
 
 DATABASE_URI="$(fetch "/${SSM_ENV}/${SSM_APP}/db/uri")"
+# Ensure SSL is required for RDS connections
+case "$DATABASE_URI" in
+  *sslmode=*) ;;
+  *\?*) DATABASE_URI="${DATABASE_URI}&sslmode=require" ;;
+  *)    DATABASE_URI="${DATABASE_URI}?sslmode=require" ;;
+esac
 PAYLOAD_SECRET="$(fetch "/${SSM_ENV}/${SSM_APP}/payload/secret")"
 
 BACKEND_URL="http://${PUBLIC_IP}:3001"
