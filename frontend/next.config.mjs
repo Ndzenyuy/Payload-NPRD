@@ -10,20 +10,14 @@ const nextConfig = {
   images: {
     remotePatterns: [
       {
+        // ALB hostname — set at runtime via NEXT_PUBLIC_PAYLOAD_URL build arg
         protocol: 'http',
-        hostname: 'localhost',
-        port: '3000',
-        pathname: 'api/media/**',
-      },
-      {
-        protocol: 'http',
-        hostname: '18.215.146.52',
-        port: '3001',
+        hostname: '**',
         pathname: '/media/**',
       },
       {
         protocol: 'https',
-        hostname: 'payload-test-dev.s3.us-east-1.amazonaws.com',
+        hostname: '**.amazonaws.com',
         pathname: '/**',
       },
     ],

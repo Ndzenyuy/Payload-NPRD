@@ -16,48 +16,41 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Debug GitHub Context
-        run: |
-          echo "Repository: ${{ github.repository }}"
-          echo "Ref: ${{ github.ref }}"
-          echo "Actor: ${{ github.actor }}"
-          echo "Event: ${{ github.event_name }}"
-
-      - name: Set Environment Variables
+      - name: Set environment variables
         id: vars
         run: |
           COMMIT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          
+
           if [[ "${{ github.event_name }}" == "release" ]]; then
             TAG="${{ github.event.release.tag_name }}"
             ENV="prod"
             ECR_REPO="testapp-backend-prod"
             ECS_CLUSTER="ECS-Cluster-Shared-Services-PRD"
             ECS_SERVICE="testapp-backend-prod"
+            MIGRATE_TASK_DEF="testapp-migrate-prod"
           else
             TAG="${COMMIT_SHA}-nonprod-${TIMESTAMP}"
             ENV="nonprod"
             ECR_REPO="testapp-backend-nonprod"
             ECS_CLUSTER="ECS-Cluster-Shared-Services-NPRD"
             ECS_SERVICE="testapp-backend-nonprod"
+            MIGRATE_TASK_DEF="testapp-migrate-nonprod"
           fi
-          
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "env=${ENV}" >> $GITHUB_OUTPUT
-          echo "ecr_repo=${ECR_REPO}" >> $GITHUB_OUTPUT
-          echo "ecs_cluster=${ECS_CLUSTER}" >> $GITHUB_OUTPUT
-          echo "ecs_service=${ECS_SERVICE}" >> $GITHUB_OUTPUT
-          
-          echo "📦 Image Tag: ${TAG}"
-          echo "🌍 Environment: ${ENV}"
-          echo "📋 ECR Repository: ${ECR_REPO}"
 
-      - name: Configure AWS Credentials
+          echo "tag=${TAG}"                       >> $GITHUB_OUTPUT
+          echo "env=${ENV}"                       >> $GITHUB_OUTPUT
+          echo "ecr_repo=${ECR_REPO}"             >> $GITHUB_OUTPUT
+          echo "ecs_cluster=${ECS_CLUSTER}"       >> $GITHUB_OUTPUT
+          echo "ecs_service=${ECS_SERVICE}"       >> $GITHUB_OUTPUT
+          echo "migrate_task_def=${MIGRATE_TASK_DEF}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -68,73 +61,112 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker Image
+      - name: Build and push image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+          ECR_REPO: ${{ steps.vars.outputs.ecr_repo }}
         run: |
-          echo "🔨 Building Docker image..."
-          docker build -t $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG .
-          docker tag $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:latest
-          echo "✅ Build completed"
+          docker build -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG .
+          docker tag  $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPO:latest
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPO:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        id: build
 
-      - name: Push to ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
+      # Run `payload migrate` inside the backend image on the shared ECS cluster.
+      # This creates/updates Payload CMS tables in RDS before the new service version starts.
+      # The migrate task definition reads DATABASE_URI and PAYLOAD_SECRET from SSM at runtime.
+      - name: Run database migration
         run: |
-          echo "📤 Pushing image to ECR..."
-          docker push $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG
-          docker push $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:latest
-          echo "✅ Push completed"
-          echo "🔗 Image: $ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG"
+          echo "Starting migration task: ${{ steps.vars.outputs.migrate_task_def }}"
 
-      - name: Update ECS Task Definition
-        id: task-def
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.vars.outputs.tag }}
-        run: |
-          echo "📝 Fetching current task definition..."
-          TASK_DEFINITION=$(aws ecs describe-task-definition \
-            --task-definition ${{ steps.vars.outputs.ecs_service }} \
-            --query 'taskDefinition' \
-            --output json)
-          
-          echo "🔄 Updating container image..."
-          NEW_TASK_DEF=$(echo $TASK_DEFINITION | jq --arg IMAGE "$ECR_REGISTRY/${{ steps.vars.outputs.ecr_repo }}:$IMAGE_TAG" \
-            '.containerDefinitions[0].image = $IMAGE | 
-             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
-          
-          echo "$NEW_TASK_DEF" > task-definition.json
-          echo "✅ Task definition updated"
+          # Register a new revision of the migrate task definition pointing at the new image
+          CURRENT_DEF=$(aws ecs describe-task-definition \
+            --task-definition ${{ steps.vars.outputs.migrate_task_def }} \
+            --query 'taskDefinition' --output json)
 
-      - name: Deploy to ECS
-        run: |
-          echo "🚀 Registering new task definition..."
+          NEW_DEF=$(echo "$CURRENT_DEF" | jq \
+            --arg IMAGE "${{ steps.build.outputs.image }}" \
+            '.containerDefinitions[0].image = $IMAGE |
+             del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)')
+
           NEW_TASK_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://task-definition.json \
-            --query 'taskDefinition.taskDefinitionArn' \
-            --output text)
-          
-          echo "📋 New Task Definition: $NEW_TASK_ARN"
-          
-          echo "🔄 Updating ECS service..."
+            --cli-input-json "$NEW_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
+          echo "Registered migrate task: $NEW_TASK_ARN"
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ steps.vars.outputs.ecs_cluster }} \
+            --task-definition "$NEW_TASK_ARN" \
+            --launch-type EC2 \
+            --region ${{ env.AWS_REGION }} \
+            --query 'tasks[0].taskArn' --output text)
+
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "ERROR: Failed to start migration task. Check cluster capacity and ECR image."
+            exit 1
+          fi
+
+          echo "Migration task started: $TASK_ARN"
+          echo "Waiting for migration to complete..."
+
+          aws ecs wait tasks-stopped \
+            --cluster ${{ steps.vars.outputs.ecs_cluster }} \
+            --tasks "$TASK_ARN" \
+            --region ${{ env.AWS_REGION }}
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ steps.vars.outputs.ecs_cluster }} \
+            --tasks "$TASK_ARN" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+
+          STOP_REASON=$(aws ecs describe-tasks \
+            --cluster ${{ steps.vars.outputs.ecs_cluster }} \
+            --tasks "$TASK_ARN" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'tasks[0].stoppedReason' --output text)
+
+          echo "Exit code:   $EXIT_CODE"
+          echo "Stop reason: $STOP_REASON"
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "ERROR: Migration failed. Check CloudWatch logs at /ecs/testapp-backend-${{ steps.vars.outputs.env }}"
+            exit 1
+          fi
+
+          echo "Migration completed successfully."
+
+      - name: Deploy updated service
+        run: |
+          CURRENT_DEF=$(aws ecs describe-task-definition \
+            --task-definition ${{ steps.vars.outputs.ecs_service }} \
+            --query 'taskDefinition' --output json)
+
+          NEW_DEF=$(echo "$CURRENT_DEF" | jq \
+            --arg IMAGE "${{ steps.build.outputs.image }}" \
+            '.containerDefinitions[0].image = $IMAGE |
+             del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)')
+
+          NEW_TASK_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+
           aws ecs update-service \
             --cluster ${{ steps.vars.outputs.ecs_cluster }} \
             --service ${{ steps.vars.outputs.ecs_service }} \
-            --task-definition $NEW_TASK_ARN \
+            --task-definition "$NEW_TASK_ARN" \
             --force-new-deployment
-          
-          echo "✅ Service update initiated - deployment will continue in background"
 
-      - name: Deployment Summary
+          echo "Service deployment initiated: ${{ steps.vars.outputs.ecs_service }}"
+
+      - name: Summary
         if: always()
         run: |
-          echo "📊 Deployment Summary"
-          echo "===================="
-          echo "Environment: ${{ steps.vars.outputs.env }}"
-          echo "Image Tag: ${{ steps.vars.outputs.tag }}"
-          echo "ECS Cluster: ${{ steps.vars.outputs.ecs_cluster }}"
-          echo "ECS Service: ${{ steps.vars.outputs.ecs_service }}"
-          echo "Status: ${{ job.status }}"
+          echo "Environment : ${{ steps.vars.outputs.env }}"
+          echo "Image tag   : ${{ steps.vars.outputs.tag }}"
+          echo "ECS cluster : ${{ steps.vars.outputs.ecs_cluster }}"
+          echo "ECS service : ${{ steps.vars.outputs.ecs_service }}"
+          echo "Status      : ${{ job.status }}"
