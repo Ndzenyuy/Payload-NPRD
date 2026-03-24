@@ -8,7 +8,8 @@ services:
       dockerfile: scripts/backend-migrate.Dockerfile
     env_file:
       - .env
-    # DATABASE_URI and PAYLOAD_SECRET come from .env (fetched from SSM)
+    environment:
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
     networks:
       - app
     profiles:
@@ -23,6 +24,7 @@ services:
     environment:
       PAYLOAD_URL: ${PAYLOAD_URL:-http://localhost:3001}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
     ports:
       - "3001:3001"
     volumes:
